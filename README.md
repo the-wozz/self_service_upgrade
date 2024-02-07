@@ -11,7 +11,7 @@ This will then check if S.U.P.E.R.M.A.N exists on the machine and runs it and pr
 _With the proper scoping of the Jamf Pro Configuration Profile you can essentially have 1 'running' S.U.P.E.R.M.A.N Configuration Profile in the environment after upgrade to macOS Sonoma._
 
 ## Requirements:
-+ macOS Monterey [12] - Ventura [13], this does appear to work on Big Sur with some output errors but overall seems to work
++ macOS Monterey [12] - Ventura [13], this does appear to work on Big Sur [11] with some output errors
 + Jamf Pro 10.48+ [https://www.jamf.com/products/jamf-pro/]
 + Swift Dialog 2.4+ [https://github.com/swiftDialog/swiftDialog]
 + S.U.P.E.R.M.A.N 4.x [https://github.com/Macjutsu/super]
@@ -42,7 +42,7 @@ Create a Jamf Pro...
   - Upgrades Allowed: true
   - Target version: 14
   - Scope: The 'Computer Static Group' you created in the previous step [Step 4]
-6. Policy with the 'self_service_upgrade.sh' Script as a Payload.
+6. Policy with the 'self_service_upgrade.sh' Script as a Payload and the following options:
   - Frequency: Ongoing
   - Set Parameter 4 to your 'Computer Static Group' created in Step 4
   - Set Parameter 5 to your S.U.P.E.R.M.A.N 4 Configuration Profile NAME, created in Step 5
