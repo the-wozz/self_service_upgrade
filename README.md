@@ -32,9 +32,9 @@ _With the proper scoping of the Jamf Pro Configuration Profile you can essential
 
 ## How to use this script [IN ORDER!]:
 Create a Jamf Pro...
-1. Script with 'self_service_upgrade.sh'
-**EDIT THESE 3 SETTINGS AT THE TOP OF THE SCRIPT**
-**IMPORTANT You will need to come back to the script to add your 'apiClientID' and 'apiClientSecret' created in the following steps!
+1. Script with 'sonoma_upgrade.sh'<br>
+**EDIT THESE 3 SETTINGS AT THE TOP OF THE SCRIPT**<br>
+**IMPORTANT You will need to come back to the script to add your 'apiClientID' and 'apiClientSecret' created in the following steps!<br>
   - jamfProURL="htttps://yourjamfprourl.com"
   - apiClientID=""
   - apiClientSecret=""
