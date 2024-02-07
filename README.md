@@ -42,6 +42,8 @@ Create a Jamf Pro...
   - Upgrades Allowed: true
   - Target version: 14
   - Scope: The 'Computer Static Group' you created in the previous step [Step 4]
+  - Suggestion: Scope: Exclude: Sonoma
+    - This allows the profile to be removed upon upgrade log-in
 6. Policy with the 'self_service_upgrade.sh' Script as a Payload and the following options:
   - Frequency: Ongoing
   - Set Parameter 4 to your 'Computer Static Group' created in Step 4
