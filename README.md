@@ -33,6 +33,11 @@ _With the proper scoping of the Jamf Pro Configuration Profile you can essential
 ## How to use this script [IN ORDER!]:
 Create a Jamf Pro...
 1. Script with 'self_service_upgrade.sh'
+**EDIT THESE 3 SETTINGS AT THE TOP OF THE SCRIPT**
+**IMPORTANT You will need to come back to the script to add your 'apiClientID' and 'apiClientSecret' created in the following steps!
+  - jamfProURL="htttps://yourjamfprourl.com"
+  - apiClientID=""
+  - apiClientSecret=""
 2. API Roles and Clients' Role, name it whichever you please, and add that following Privileges:
   - Read Static Computer Groups
   - Update Static Computer Groups
