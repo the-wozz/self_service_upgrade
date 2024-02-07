@@ -1,407 +1,219 @@
 #!/bin/bash
 
-# What it do: S.U.P.E.R.M.A.N 4 [Jamf Pro] Self Service 'standalone' update check add-on with progressive windows and messages prior to being prompted with S.U.P.E.R.M.A.N.
-# built-in failsafes and System Preferences fallback 
-# Author: Zachary 'Woz'nicki
-# Last updated: 1/22/24
+# Original Author: Brian Oanes
+# Re-vised Author: Zachary 'Woz'nicki
+# What it do: allow Sonoma upgrades via S.U.P.E.R.M.A.N from Self Service. adds machine to Static Group which allows for addition of .U.P.E.R.M.A.N CP to allow upgrades to macOS Sonoma.
+# Requirements: Jamf Pro, Swift Dialog, S.U.P.E.R.M.A.N 4.x, macOS [12] Monterey - [13] Ventura
 
-############################## Assets Required ############################
-# Jamf Pro 10.x
-# macOS 11 [Big Sur] - macOS 14 [Sonoma], macOS 10 [Catalina] will only open System Preferences!
-# S.U.P.E.R.M.A.N [4] https://github.com/Macjutsu/super (not tested with other versions!)
-# SwiftDialog v2.3.2 [min] https://github.com/swiftDialog/swiftDialog
-# Icon image for Swift Dialog [OPTIONAL]
-############################################################################
+version="0.9"
+versionDate="1/29/24"
 
-# Adjustable Variables #
-# Swift Dialog Jamf Pro Policy
-swiftPolicy=""
-# Swift Dialog icon location
+# API Variables #
+
+# *** Jamf Pro URL ***
+jamfProURL=""
+apiClientID=""
+apiClientSecret=""
+# End API Variables #
+
+# Customizable variables #
+
+# Static Group to ADD machine to, Parameter 4 in 'Script Parameters'
+staticGroup=$4
+# S.U.P.E.R.M.A.N Configuration Profile NAME with NEW macOS ugprade version to look for:
+Profile1=$5
+# Swift Dialog icon for notifications, follow Swift Dialog wiki for accepted icon types
 swiftIcon=""
-# Swift Dialog icon Jamf Pro Policy
-iconPolicy=""
+# macOS Sonoma icon to use for Swift Dialog
+sonomaIcon=""
+# Swift Dialog Jamf Pro policy event trigger for machines that do not have Swift Dialog installed. Swift can be installed prior and this will be ignored
+swiftPolicy="swift_dialog"
 # S.U.P.E.R.M.A.N Jamf Pro Policy
-superPolicy=""
-# IBM Notifier Jamf Pro Policy
-ibmNotifierPolicy=""
-# Fallback Method allows the script to open System Preferences/Settings if device does not have a Managed S.U.P.E.R.M.A.N plist
-fallbackMethod=1
-# Deployed S.U.P.E.R.M.A.N version in environment
-deployedSuperVersion="4.0.2"
+superPolicy="super-4"
+# Seconds to look for Profile before exiting, remember this variable is x 5!
+seconds=180
+# Shows additional echoes for troubleshooting
+verboseMode=0
 
-# Static'ish' Variables
-# Swift Dialog binary
-swiftDialogBin="/usr/local/bin/dialog"
-# Swift Dialog Command File
-commandFile="/var/tmp/dialog.log"
-# S.U.P.E.R.M.A.N file
-superBin="/Library/Management/super/super"
-# S.U.P.E.R.M.A.N version
-superVersion=$(defaults read /Library/Management/super/com.macjutsu.super.plist SuperVersion)
+# End customizable variables
+
 # S.U.P.E.R.M.A.N log file
 superLog="/Library/Management/super/logs/super.log"
-# S.U.P.E.R.M.A.N plist
-#realSuperPlist="/Library/Management/super/com.macjutsu.super.plist"
-# MANAGED (Jamf) S.U.P.E.R.M.A.N plist
-superPlist="/Library/Managed Preferences/com.macjutsu.super.plist"
-# macOS version
-osVersion=$(sw_vers -productVersion)
-osVersionSimple=$(sw_vers -productVersion | cut -d'.' -f1)
-
+# Swift Dialog binary FULL location, not advisable to use symlink!
+swiftDialog="/usr/local/bin/dialog"
+# Swift Dialog command file
+commandFile="/var/tmp/dialog.log"
+#staticGroup="Sonoma Upgrades"
+staticGroup_Convert="${staticGroup// /%20}"
+# Pre-Stage IDs to show to user, comma seperated, NO spaces!
+serialNumber=$(system_profiler SPHardwareDataType | /usr/bin/awk '/Serial Number/{print $4}')
+# Shows All Profiles installed on device
+profiles=$(/usr/bin/profiles -C -v | awk -F: '/attribute: name/{print $NF}' | /usr/bin/grep "$Profile1" | /usr/bin/sed 's/^ *//')
 # End Variables #
-## Start Functions ##
 
-iconCheck() {
-	echo "* SWIFT DIALOG ICON CHECK *"
-        if [[ ! -f "$swiftIcon" ]]; then
-            echo "*** WARNING: Icon image set but icon NOT found at location. ***"
-                if [[ -z "$iconPolicy" ]]; then
-                    echo "* WARNING: No icon policy set! Using default 'Swift Dialog' System Preferences/Settings icon. *"
-                elif [[ -n "$iconPolicy" ]]; then
-                    echo "Calling Jamf Pro Policy: $iconPolicy"
-                    jamf policy -event "$iconPolicy"
-                fi
-        elif [[ -f "$swiftIcon" ]]; then
-            echo "* CHECK PASSED: Icon found. Continuing... *"
-        elif [[ -z "$swiftIcon" ]]; then
-            echo "* INFO: No Swift Dialog icon set. Bypassing 'iconPolicy' variable. Using default 'Swift Dialog' System Preferences/Settings icon. *"
-        fi
+verboseCheck(){
+if [[ "$verboseMode" -gt 0 ]]; then
+    /bin/echo "!* VERBOSE MODE ENABLED *!"
+    /bin/echo "Extra logging will be shown."
+    #/bin/echo "Converted Static Group (No spaces): $staticGroup_Convert"
+fi
 }
 
-swiftDialogCheck() {
-    echo "* SWIFT DIALOG CHECK *"
-        if [[ ! -e "$swiftDialogBin" ]]; then
-            echo "Swift Dialog NOT FOUND! Unable to prompt user."
-                if [[ -z "$swiftPolicy" ]]; then
-                    echo "* WARNING: Swift Dialog Jamf Pro Policy NOT set! *"
-                    echo "* Unable to prompt user because of Swift Dialog download failure *"
-                    exit 1
-                elif [[ -n "$swiftPolicy" ]]; then
-                    echo  "Calling Swift Dialog policy"
-                    jamf policy -event "$swiftPolicy"
-                fi
-        else
-            echo "CHECK PASSED: Swift Dialog found. Continuing..."
-            swiftVersion=$("$swiftDialogBin" --version | cut -c1-5)
-            echo "Swift Dialog version: $swiftVersion"
-                if [[ "$swiftVersion" < "2.3.2" ]]; then
-                    echo "Swift Dialog version too old! 2.3.2 minimum required for proper messaging."
-                        if [[ -n "$swiftPolicy" ]]; then
-                            echo  "Calling Swift Dialog policy"
-                            jamf policy -event "$swiftPolicy"
-                        elif [[ -z "$swiftPolicy" ]]; then
-                            echo "* WARNING: Swift Dialog Jamf Pro Policy NOT set! *"
-                            echo "*** ERROR: Unable to prompt user because of Swift Dialog failure above ***"
-                            exit 1
-                        fi
-                else
-                    echo "* Swift Dialog version PASSED *"
-                fi
-        fi
-}
+## Functions ##
 
-deleteIBMNotifier() {
-    echo "1 Time Run: Delete IBM Notifier and reinstall if found..."
-    if [[ -e "/Library/Management/super/IBM Notifier.app" ]]; then
-        echo "IBM Notifier found. Deleting..."
-        rm -rf "/Library/Management/super/IBM Notifier.app" & sleep 2
+# Jamf Pro Access Token
+get_Access_Token() {
+    /bin/echo "STATUS: Getting Access Token..."
+    response=$(/usr/bin/curl -s -L -X POST "$jamfProURL"/api/oauth/token \
+                    -H 'Content-Type: application/x-www-form-urlencoded' \
+                    --data-urlencode "client_id=$apiClientID" \
+                    --data-urlencode 'grant_type=client_credentials' \
+                    --data-urlencode "client_secret=$apiClientSecret")
+    accessToken=$(/bin/echo "$response" | /usr/bin/plutil -extract access_token raw -)
+    if [[ -n "$accessToken" ]]; then
+        /bin/echo "STATUS: Access Token aquired!"
     else
-        echo "IBM Notifier not found, continuing..."
-    fi
-}
-
-ibmNotifierCheck(){
-    echo "* IBM NOTIFIER CHECK *"
-    ibmNotifier_Bin="/Library/Management/super/IBM Notifier.app/Contents/MacOS/IBM Notifier"
-    ibmNotifier="/Library/Management/super/IBM Notifier.app"
-    if [[ -e "$ibmNotifier" ]]; then
-        ibmNotifierVersion=$("$ibmNotifier_Bin" --version | awk '{print $4}')
-        echo "IBM Notifier version: $ibmNotifierVersion"
-            if [[ "$ibmNotifierVersion" < "3.0.2" ]]; then
-                echo "** CHECK FAILED: IBM Notifier version too old! **"
-                    if [[ -n "$ibmNotifierPolicy" ]]; then
-                        echo "Calling Jamf Pro Policy: $ibmNotifierPolicy"
-                        jamf policy -event "$ibmNotifierPolicy"
-                    elif [[ "$ibmNotifierPolicy" == "X" ]]; then
-                        echo "Passing IBM Notifier download to S.U.P.E.R.M.A.N / GitHub"
-                    elif [[ -z "$ibmNotifierPolicy" ]]; then
-                        echo "ERROR: No IBM Notifier Policy set! Exiting..."
-                        exit 1
-                    fi
-            elif [[ "$ibmNotifierVersion" > "3.0.1" ]]; then
-                echo "* CHECK PASSED: IBM Notifier version 3.0.2 or greater! *"
-            fi
-    elif [[ ! -e "$ibmNotifier" ]] && [[ -n "$ibmNotifierPolicy" ]]; then
-        echo "IBM Notifier does not exist! Calling Jamf Pro Policy: $ibmNotifierPolicy"
-        ibmNotifierPolicy
-    elif [[ ! -e "$ibmNotifier" ]] && [[ -z "$ibmNotifierPolicy" ]]; then
-        echo "* CHECK FAILED: IBM Notifier not found! *"
-        echo "* ERROR: No IBM Notifier Policy set! Exiting... *"
+        /bin/echo "ERROR: Unable to get Access Token! Exiting..."
         exit 1
     fi
+    if [[ "$verboseMode" -gt 0 ]]; then
+        /bin/echo "Access Token: $accessToken"
+    fi
 }
 
-ibmNotifierPolicy () {
-    jamf policy -event "$ibmNotifierPolicy"
-    wait
-    ibmNotifierCheck
+# Check for Swift Dialog
+dialog_Check() {
+    /bin/echo "* START-UP: Swift Dialog Check *"
+    if [[ -e "$swiftDialog" ]]; then
+        /bin/echo "STATUS: Swift Dialog found. Able to prompt."
+    else
+        /bin/echo "** CAUTION: Swift Dialog NOT found! **"
+        /bin/echo "STATUS: Calling Jamf Pro Policy: $swiftPolicy"
+        /usr/local/jamf/bin/jamf policy -event "$swiftPolicy"
+            /usr/bin/wait
+    fi
 }
 
-ssWindow() {
-    "$swiftDialogBin" -o -p --progress --progresstext "Searching for compatible required updates..." \
-    --button1text none --centericon -i "$swiftIcon" -iconsize 80 \
-    --title "Checking for macOS Updates" --titlefont size="17" \
-    --message "macOS version: $osVersion" --messagefont size="11" --messagealignment center \
-    --position bottomright --width 400 --height 220 & sleep 0.1
-        # Exit button handling when enabled --button2enabled
-        # case $? in
-        #     2)
-        #         echo "User pressed Exit button"
-        #         exit 2
-        #     ;;
-        # esac
+dialogBox(){
+    /bin/echo "SWIFT DIALOG: Prompting user..."
+        "$swiftDialog" -d -o -p --button1text none \
+        --width 400 --height 240 --position bottomright --progress \
+        -i "$swiftIcon" --iconsize 96 --centericon -y "$sonomaIcon" \
+        --progresstext "Adding machine to upgrade group..." \
+        -t "macOS Sonoma Upgrade" --titlefont size="17" \
+        --messagefont size="10" --messageposition center --messagealignment center -m ""
 }
 
-updatesAvailable_Win() {
-    "$swiftDialogBin" -o -p --progress --hideicon --button1text none \
-    --title "Available Updates:" --titlefont size="18" \
-    --message "" --messagefont size="15" \
-    --position bottomright --width 400 --height 220 & sleep 0.1
+add_To_Static_Group(){
+    if [[ "$profiles" != "$Profile1" ]]; then
+    skip=0
+    get_Access_Token
+        /bin/echo "STATUS: Adding $serialNumber to 'Computer Static Group': [$staticGroup]"
+        /bin/echo "progresstext: ADDING: $serialNumber to $staticGroup" >> ${commandFile} & /bin/sleep 2 #allows time for user to see status message of progress
+
+            apiData="<computer_group><computer_additions><computer><serial_number>$serialNumber</serial_number></computer></computer_additions></computer_group>"
+
+            staticAdd=$(curl -s -L -X PUT "$jamfProURL"/JSSResource/computergroups/name/"$staticGroup_Convert" -o /dev/null \
+            -H "Authorization: Bearer ${accessToken}" \
+            -H "Content-Type: text/xml" \
+            --data "${apiData}")
+
+        # echo variable to empty console
+        /bin/echo "$staticAdd" >> /dev/null
+        /bin/echo "SUCCESS: $serialNumber added to $staticGroup"
+        /bin/echo "progresstext: ADDED: $serialNumber to $staticGroup" >> ${commandFile} & /bin/sleep 3 #allows time for user to see status message of progress
+    else
+        /bin/echo "PROFILE: $profiles exists on machine already!"
+        /bin/echo "STATUS: Skipping add to Static Group: $staticGroup"
+        /bin/echo "progresstext: ✅ Profile found! Checking for update..." >> ${commandFile} & /bin/sleep 3
+        /bin/echo "STATUS: Calling S.U.P.E.R.M.A.N..."
+        super_Call
+    fi
 }
 
-checkUpdates() {
-    echo "Current macOS version: $osVersion"
-    #echo "Targeting updates on macOS version: $updateVersion"
+check_For_Profile(){
+    if [[ "$skip" == 0 ]]; then
+        /bin/echo "Checking for $Profile1 on machine."
+        /bin/echo "progresstext: Waiting for Configuration Profile to appear on machine..." >> ${commandFile} & /bin/sleep 5
+        ProfileWaitCounter=0
 
-        if [[ "$osVersionSimple" == "14" ]]; then
-            echo "Checking softwareupdate on Sonoma..."
-            availableUpdates=$(softwareupdate -l | grep "Title:" | cut -d ',' -f1 | awk -F ':' '{print $2}' | sed 's/ //' | sort -r)
-        elif [[ "$osVersionSimple" == "13" ]]; then
-            echo "Checking softwareupdate on Ventura..."
-            availableUpdates=$(softwareupdate -l | grep "Title:" | cut -d ',' -f1 | awk -F ':' '{print $2}' | sed 's/ //' | grep -v "Monterey" | grep -v "Sonoma" | sort -r)
-        elif [[ "$osVersionSimple" == "12" ]] && [[ "$updateVersion" == "X" ]]; then
-            echo "Checking softwareupdate on Monterey...(No upgrades allowed)"
-            availableUpdates=$(softwareupdate -l | grep "Title:" | cut -d ',' -f1 | awk -F ':' '{print $2}' | sed 's/ //' | grep -v "Ventura" | grep -v "Sonoma" | sort -r)
-        elif [[ "$osVersionSimple" == "12" ]] && [[ "$updateVersion" == "13" ]]; then
-            echo "Checking softwareupdate on Ventura..."
-            availableUpdates=$(softwareupdate -l | grep "Title:" | cut -d ',' -f1 | awk -F ':' '{print $2}' | sed 's/ //' | grep -v "Monterey" | grep -v "Sonoma" | sort -r)
-        elif [[ "$osVersionSimple" == "11" ]]; then
-            echo "Checking softwareupdate on Ventura..."
-            availableUpdates=$(softwareupdate -l | grep "Title:" | cut -d ',' -f1 | awk -F ':' '{print $2}' | sed 's/ //' | grep -v "Monterey" | grep -v "Sonoma" | sort -r)
-        elif [[ "$osVersionSimple" == "10" ]]; then
-			echo "*** WARNING: macOS version too old [10/Catalina] to update via S.U.P.E.R.M.A.N! Sending to System Preferences... ***"
-        	sysPreferences
+	while [[ "$profiles" != *"$Profile1" ]]
+		do
+        	/bin/echo "Waiting for profile $Profile1..."
+            ProfileWaitCounter=`expr $ProfileWaitCounter + 1`
+            /bin/sleep 5
+            #echo "Counter: $ProfileWaitCounter"
+			profiles=$(/usr/bin/profiles -C -v | /usr/bin/awk -F: '/attribute: name/{print $NF}' | /usr/bin/grep "$Profile1")
+
+            	if [[ -z "$profiles" ]]; then
+					profiles=0
+				fi
+
+			if [[ "$ProfileWaitCounter" -gt "$seconds" ]]; then
+            	/bin/echo "ERROR: Never detected $Profile1 after $seconds seconds. Exiting..."
+                /bin/echo "progresstext: ERROR: ❌ Could not detect profile. Exiting..." >> ${commandFile} & /bin/sleep 5
+                /bin/echo quit: >> ${commandFile} && exit 1
+			fi
+		done
+
+        /bin/echo "PROFILE: $profiles FOUND!"
+        /bin/echo "progresstext: ✅ Profile found! Checking for update..." >> ${commandFile} & /bin/sleep 3
+        /bin/echo "STATUS: Calling S.U.P.E.R.M.A.N..."
+        super_Call
+    fi
+}
+
+super_Call(){
+        /bin/echo "* START-UP: S.U.P.E.R.M.A.N Check *"
+    if [[ -e "/Library/Management/super/super" ]]; then
+        /bin/echo "STATUS: S.U.P.E.R.M.A.N found. Able to prompt."
+		/bin/echo "progresstext: ✅ Profile found! Checking for update..." >> ${commandFile} & /bin/sleep 3
+        /bin/echo "STATUS: Calling S.U.P.E.R.M.A.N..."
+        /Library/Management/super/super --reset-super & /usr/bin/tail -f "$superLog" | superTail
+    else
+        /bin/echo "** CAUTION: S.U.P.E.R.M.A.N NOT found! **"
+        /bin/echo "Calling Jamf Pro Policy: $superPolicy"
+        /usr/local/jamf/bin/jamf policy -event "$superPolicy" --reset-super
+        /bin/sleep 25
+        /usr/bin/tail -f "$superLog" | superTail
+        if [[ $? =~ "No such file or directory" ]]; then
+            /bin/echo "*** ERROR: SUPER tail never happen! Exiting... ***"
+            /bin/echo "progresstext: Possible issue ⛔️ Exiting..." >> ${commandFile} & /bin/sleep  5
+            /bin/echo quit: >> ${commandFile} && exit 1
         fi
-
-            if [[ "$availableUpdates" == *"macOS"* ]]; then
-                echo "progresstext: macOS update found! ✅" >> ${commandFile}
-                sleep 5
-            fi
-            if [[ "$availableUpdates" == *"Safari"* ]]; then
-                safariUpdate=1
-                echo "progresstext: Safari update found! ✅" >> ${commandFile}
-                echo "Safari update available, grabbing version.."
-                safariUpdateVersion=$(softwareupdate -l | grep "Title" | grep "Safari" | awk '{print $4}' | cut -d ',' -f1)
-                safariUpdateComp=$(echo "Safari $safariUpdateVersion")
-            fi
-
-            if [[ -n "$availableUpdates" ]]; then
-                echo "quit:" >> ${commandFile} && updatesAvailable_Win
-                echo "* SOFTWAREUPDATE: Update(s) available! *"
-                IFS=$'\n'
-                availableUpdates=($availableUpdates)
-
-                    for (( i=0; i<${#availableUpdates[@]}; i++ ))
-                        do
-                                if [[ "$safariUpdate" -eq 1 ]]; then
-                                    for value in "${availableUpdates[@]}"
-                                        do
-                                        [[ $value != Safari ]] && new_array+=($availableUpdates)
-                                        done
-                                    availableUpdates=("${new_array[@]}")
-                                    availableUpdates+=("$safariUpdateComp")
-                                    echo "$i: ${availableUpdates[$i]}"
-                                    safariUpdate=0
-                                else
-                                    echo "$i: ${availableUpdates[$i]}"
-                                fi
-                        done
-
-                totalUpdates=${#availableUpdates[*]}
-                echo "Total updates: $totalUpdates"
-                echo "progresstext: Preparing to download updates..." >> ${commandFile}
-
-                    if [[ "$totalUpdates" -eq 1 ]]; then
-                        echo "height: 180" >> ${commandFile} &
-                        echo "list: ${availableUpdates[0]}" >> ${commandFile}
-                        echo "listitem: ${availableUpdates[0]}: wait" >> ${commandFile}
-                    elif [[ "$totalUpdates" -eq 2 ]]; then
-                        echo "height: 230" >> ${commandFile} &
-                        echo "list: ${availableUpdates[0]}, ${availableUpdates[1]}" >> ${commandFile}
-                        echo "listitem: ${availableUpdates[0]}: wait" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[1]}: wait" >> ${commandFile}
-                    elif [[ "$totalUpdates" -eq 3 ]]; then
-                        echo "height: 280" >> ${commandFile} &
-                        echo "list: ${availableUpdates[0]}, ${availableUpdates[1]}, ${availableUpdates[2]}" >> ${commandFile}
-                        echo "listitem: ${availableUpdates[0]}: wait" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[1]}: wait" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[2]}: wait" >> ${commandFile}
-                    fi
-                sleep 5
-            else
-                echo "* SOFTWAREUPDATE: No updates available/found. *"
-				echo "Running S.U.P.E.R.M.A.N just in-case..."
-				/Library/Management/super/super
-                sleep 3
-                echo "Notifying user that 0 updates are available."
-                echo "quit:" >> ${commandFile}
-                noUpdateMessage
-            fi
-}
-
-noUpdateMessage() {
-     $swiftDialogBin -o -p -i "$swiftIcon" --iconsize 65 --centericon \
-    --title "macOS Up-to-Date" --titlefont size="18" \
-    --message "No available updates found.<br>Please allow a few minutes for any other possible updates that may be preparing." --messagefont size="15" --messageposition center --messagealignment center \
-    --button1text: "OK" --helpmessage "If you were expecting updates, please try restarting this Mac and running the policy again." \
-    --position bottomright  --width 400 --height 220 & sleep 0.1
-        echo "activate:" >> ${commandFile} & exit 0
-}
-
-checkSuperPlist() {
-    echo "* MANAGED S.U.P.E.R.M.A.N PREFERENCES *"
-        if [[ ! -f "$superPlist" ]] && [[ "$fallbackMethod" -eq 0 ]]; then
-            echo "*** CRITICAL: S.U.P.E.R.M.A.N plist NOT found AND 'Fallback Method disabled' ! ***"
-            echo "*** CHECK FAILED: Machine not scoped for S.U.P.E.R.M.A.N or possibly needs reboot! ***"
-            echo "title: Unable To Find Updates" >> ${commandFile} &
-            echo "progresstext: Exiting..." >> ${commandFile}
-            echo "progress: 1" >> ${commandFile}
-            sleep 15
-            echo "quit:" >> ${commandFile}
-            exit 1
-        elif [[ ! -f "$superPlist" ]] && [[ "$fallbackMethod" -eq 1 ]]; then
-            echo "* Fallback Method Enabled *"
-            echo "*** WARNING: Machine not scoped for S.U.P.E.R.M.A.N or possibly needs reboot! ***"
-			sysPreferences
-            exit 0
-        elif [[ -f "$superPlist" ]]; then
-            echo "* CHECK PASSED: Managed S.U.P.E.R.M.A.N Preferences found. Continuing... *"
-            updateVersion=$(defaults read "$superPlist" InstallMacOSMajorVersionTarget)
-        fi
-}
-
-sysPreferences(){
-            echo "progresstext: Opening System Preferences to update..." >> ${commandFile}
-            echo "Opening System Settings for user and exiting prompt..."
-            open -b com.apple.systempreferences "/System/Library/PreferencePanes/SoftwareUpdate.prefPane"
-            sleep 5
-            echo "quit:" >> ${commandFile}
-}
-
-superCheck() {
-    echo "* INITIAL CHECK: S.U.P.E.R.M.A.N *"
-        if [[ -e "$superBin" ]] && [[ "$superVersion" == "$deployedSuperVersion" ]]; then
-            echo "* CHECK PASSED: S.U.P.E.R.M.A.N found! *"
-            echo "STATUS: Calling S.U.P.E.R.M.A.N and tailing super.log"
-            echo "progresstext: Preparing to download updates..." >> ${commandFile}
-            sleep 5
-            /Library/Management/super/super | superTail
-        elif [[ -e "$superBin" ]] && [[ "$superVersion" != "$deployedSuperVersion" ]]; then
-            echo "* WARNING: S.U.P.E.R.M.A.N found BUT version out-of-date! *"
-            rm -rf "/Library/Management/super"
-            echo "S.U.P.E.R.M.A.N: $superVersion"
-            superInstall
-        elif [[ ! -e "$superBin" ]]; then
-            echo "* CHECK FAILED: S.U.P.E.R.M.A.N NOT found! *"
-                if [[ -n "$superPolicy" ]]; then
-                    superInstall
-                elif [[ -z "$superPolicy" ]]; then
-                    echo "superPolicy not set! Unable to download S.U.P.E.R.M.A.N. Exiting..."
-                    echo "title: Unable To Complete Updates" >> ${commandFile} &
-                    echo "progresstext: Update tool [SUPER] not found! Exiting..." >> ${commandFile} &
-                    echo "progress: 1" >> ${commandFile}
-                    sleep 12
-                    echo "quit:" >> ${commandFile}
-                    exit 1
-                fi
-        fi
+    fi
 }
 
 superTail() {
+        /bin/echo "STATUS: Starting SUPER tail..."
+        /bin/echo "progresstext: Starting upgrade download..." >> ${commandFile}
+        /bin/echo "message: This process generally ranges from 30 minutes to 1 hour." >> ${commandFile} & /bin/sleep 3
     while read -r line
         do
-            echo "progresstext: Downloading update..." >> ${commandFile}
-            if [[ $line == *"Previously downloaded macOS minor update is prepared"* ]]; then
-                echo "title: Download Complete" >> ${commandFile} &
-                echo "progresstext: Updates downloaded! Preparing..." >> ${commandFile} &
-                echo "progress: complete" >> ${commandFile}
-                echo "S.U.P.E.R.M.A.N: Previous download found!"
-                sleep 1
-            elif [[ $line == *"Downloading:"* ]]; then
-                echo "title: Downloading Updates" >> ${commandFile} &
-                echo "progresstext: $line" >> ${commandFile} &
-                echo "progress: 50" >> ${commandFile}
-                # Add ability to show progress from download to live progress percent
-                #echo "progress: $downloadProgress" >> ${commandFile}
-                sleep 1
-            elif [[ $line == *"downloading..."* ]]; then
-                echo "title: Downloading Updates" >> ${commandFile} &
-                echo "progresstext: Downloading update..." >> ${commandFile}
-                echo "progress: 50" >> ${commandFile}
-            elif [[ $line == *"Downloaded:"* ]] || [[ $line == *"downloaded"* ]]; then
-                echo "progresstext: Preparing Updates" >> ${commandFile} &
-                echo "progress: 75" >> ${commandFile}
-            elif [[ $line =~ "IBM Notifier: Restart or defer dialog with no timeout" ]] || [[ $line =~ "IBM Notifier: User authentication deadline count dialog" ]]; then
-                echo "title: Updates Ready To Install" >> ${commandFile}
-                    if [[ "$totalUpdates" -eq 1 ]]; then
-                        echo "listitem: ${availableUpdates[0]}: success" >> ${commandFile}
-                    elif [[ "$totalUpdates" -eq 2 ]]; then
-                        echo "listitem: ${availableUpdates[0]}: success" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[1]}: success" >> ${commandFile}
-                    elif [[ "$totalUpdates" -eq 3 ]]; then
-                        echo "listitem: ${availableUpdates[0]}: success" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[1]}: success" >> ${commandFile} &
-                        echo "listitem: ${availableUpdates[2]}: success" >> ${commandFile}
-                    fi
-                echo "progresstext: Preparing update notification" >> ${commandFile} &
-                echo "progress: complete" >> ${commandFile}
-                echo "Download complete. User prompted with SUPER."
-                sleep 4
-                echo "quit:" >> ${commandFile}
-                    exit 0
+            if [[ $line == *"downloading..."* ]]; then
+                /bin/echo "progresstext: Downloading upgrade..." >> ${commandFile}
+                #echo "progress: $sonomaDownloadPercentVar" >> ${commandFile}
+            elif [[ $line == *"download complete"* ]] || [[ $line == *"downloaded"* ]]; then
+                /bin/echo "SUPER: Download complete! Notifying user and exiting..."
+                /bin/echo "progress: 100" >> ${commandFile}
+                /bin/echo "progresstext: Upgrade downloaded! ✅ Preparing update..." >> ${commandFile} & sleep 10
+            elif [[ $line == *"Restart or defer dialog with no timeout"* ]]; then
+                /bin/echo "progresstext: macOS Sonoma ready for Install ✅ Preparing notification.." >> ${commandFile} & sleep 25
+                /bin/echo quit: >> ${commandFile} & exit 0
+            elif [[ $line == *"User chose to defer update"* ]]; then
+                /bin/echo quit: >> ${commandFile} & exit 0
             fi
         done
 }
 
-superInstall() {
-    echo "progresstext: Downloading update & notification tool..." >> ${commandFile} &
-    echo "STATUS: Calling Jamf Pro Policy: super-4"
-    jamf policy -event "$superPolicy" &>/dev/null & disown;
-        until [[ -e "$superLog" ]]; do
-            #echo "S.U.P.E.R.M.A.N does not exist yet..."
-            echo "progresstext: Installing update & notification tool..." >> ${commandFile}
-            sleep 1
-        done
-    echo "progresstext: Update & notification tool installed..." >> ${commandFile}
-    echo "S.U.P.E.R.M.A.N installed successfully!"
-    sleep 5
-    echo "progresstext: Preparing to download updates..." >> ${commandFile}
-    tail -f "$superLog" | superTail
-}
+## End Functions ##
 
-## End Functions
+### Main ###
+/bin/echo "Version: $version"
+/bin/echo "Version date: $versionDate"
 
-### Begin Main Body ###
-
-iconCheck
-swiftDialogCheck
-deleteIBMNotifier
-ibmNotifierCheck
-ssWindow
-checkSuperPlist
-checkUpdates
-superCheck
-
-# End Body
-
-exit 0
+verboseCheck
+dialog_Check
+dialogBox & sleep 3
+add_To_Static_Group
+check_For_Profile
